@@ -26,6 +26,53 @@ The live pipeline trace is streamed to the UI over SSE — you can watch the age
 
 ![Pipeline self-correcting after an INCORRECT verdict](docs/pipeline-correcting.png)
 
+## Under the hood — a real query trace
+
+Every stage logs its decisions. Here is an actual trace for *"What is a recurrent neural network?"* against an ingested deep-learning textbook:
+
+```text
+[CRAG] 1. RETRIEVE — "What is a recurrent neural network?"
+
+[RETRIEVER] Stage 1 - HyDE embedding...
+[HyDE] Hypothetical: "A recurrent neural network (RNN) is a class of artificial
+       neural networks designed for processing sequences of data by u..."
+
+[RETRIEVER] Stage 2 - Multi-query expansion...
+[MULTIQUERY] 3 variations generated:
+  1. "Can you explain what a recurrent neural network is?"
+  2. "What does the term recurrent neural network refer to?"
+  3. "Could you provide a definition of a recurrent neural network?"
+
+[RETRIEVER] Stage 3 - Fetching (5 queries x 25)...
+[RETRIEVER] Raw pool: 38 unique chunks
+
+[RETRIEVER] Stage 4b - Source-diverse selection...
+[RETRIEVER] Diversity: +2 chunk(s) guaranteed from "Deep+Learning+Ian+Goodfellow"
+[RETRIEVER] Pool = 5 global-top + 2 diversity = 7 total
+
+[CRAG] 2. EVALUATE — scoring 7 documents...
+[CRAG] 2. EVALUATE done — confidence: CORRECT (max score: 1.00)
+         +0.80  [Deep+Learning+Ian+Goodfellow] ✓ relevant
+         -0.80  [Deep+Learning+Ian+Goodfellow] ✗ irrelevant
+         +1.00  [Deep+Learning+Ian+Goodfellow] ✓ relevant
+         +0.40  [Deep+Learning+Ian+Goodfellow] ✓ relevant
+         -0.20  [Deep+Learning+Ian+Goodfellow] ✗ irrelevant
+         -1.00  [Deep+Learning+Ian+Goodfellow] ✗ irrelevant
+         +0.60  [Deep+Learning+Ian+Goodfellow] ✓ relevant
+
+[CRAG] 3. CORRECT (refine) — 7 scored documents...
+[REFINER] Decomposed 7 docs into 15 strips
+[REFINER] Strip  1 KEEP (0.90)  "...convolutional networks perf..."
+[REFINER] Strip 10 DROP (-0.90) "An input feature is computed with a regu..."
+[REFINER] Kept 9/15 strips
+[CRAG] 3. CORRECT (refine) done — kept 9/15 strips
+
+[CRAG] 4. GENERATE — streaming answer...
+[CRAG] 4. GENERATE done — 55.8s total
+```
+
+The verdict (`CORRECT` here) is a control signal, not just a metric — it decides whether the agent answers from documents, falls back to web search, or blends both.
+
 ## Memory — the agent remembers you
 
 Four layers via Mastra, isolated per user account:
