@@ -1,0 +1,19 @@
+# secrets — never commit
+.env
+.env.*
+
+# dependencies
+node_modules/
+
+# local databases (conversation memory, user accounts)
+mastra-memory.db
+mastra-memory.db-*
+
+# documents & extracted images (ingested locally, not part of the code)
+*.pdf
+public/images/*
+!public/images/.gitkeep
+
+# misc
+*.log
+test.zip
