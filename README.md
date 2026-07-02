@@ -1,63 +1,79 @@
-# CRAG — Corrective Retrieval-Augmented Generation (Mastra + JS)
+# CRAG-MASTRA — A RAG Chatbot That Knows When It's Wrong
 
-An implementation of the **CRAG** paper (Corrective RAG) using the
-[Mastra](https://mastra.ai) framework, in JavaScript.
+A self-correcting **Corrective Retrieval-Augmented Generation (CRAG)** chatbot with persistent, per-user memory. Instead of answering confidently from bad retrievals, the agent **grades its own retrieval quality** and dynamically decides whether to trust the documents, fall back to live web search, or blend both.
 
-**Pipeline:** `Retrieve → Evaluate → Correct → Generate`
+Built with **Mastra** (agents, tools, 4-layer memory), **GPT-4o-mini** via Vercel AI Gateway, **Upstash Vector**, **Tavily**, and **libSQL**.
 
-| Stage | What happens |
-|-------|--------------|
-| **Retrieve** | Top-10 similar docs from PGVector (Google `text-embedding-004`) |
-| **Evaluate** | Each doc scored for relevance → `CORRECT` / `AMBIGUOUS` / `INCORRECT` |
-| **Correct**  | `CORRECT` → refine internal docs · `INCORRECT` → web search (Tavily) · `AMBIGUOUS` → both |
-| **Generate** | Gemini 1.5 Pro composes a grounded answer from the collected knowledge |
+![Answer with CORRECT verdict](docs/answer-correct.png)
 
-## Setup
+## How it works
+
+Every question runs through a 4-stage agentic pipeline:
+
+```
+RETRIEVE  →  EVALUATE  →  CORRECT  →  GENERATE
+```
+
+1. **Retrieve** — 5-stage retrieval: HyDE hypothetical-answer embeddings, multi-query expansion, hybrid semantic + keyword scoring, source-diverse selection, and LLM cross-encoder re-ranking.
+2. **Evaluate** — an LLM judge scores every document's relevance and emits a confidence verdict:
+   - `CORRECT` → refine internal documents and answer
+   - `INCORRECT` → rewrite the query and search the web (Tavily)
+   - `AMBIGUOUS` → do both and present sources for each claim
+3. **Correct** — decompose-then-recompose refinement: documents are split into strips, each strip is scored for usefulness, noise is discarded.
+4. **Generate** — a grounded answer with source citations, checked for faithfulness against the refined knowledge.
+
+The live pipeline trace is streamed to the UI over SSE — you can watch the agent retrieve, self-evaluate, and correct in real time:
+
+![Pipeline self-correcting after an INCORRECT verdict](docs/pipeline-correcting.png)
+
+## Memory — the agent remembers you
+
+Four layers via Mastra, isolated per user account:
+
+| Layer | What it does |
+|---|---|
+| Message history | Recent conversation injected every turn |
+| Working memory | Persistent user profile (name, preferences, goals) the agent maintains itself, shared across all conversations |
+| Semantic recall | Vector search over all past messages — relevant history resurfaces per-query |
+| Observational memory | Background summarization of long conversations (5–40x compression) |
+
+Users sign up / sign in (scrypt hashing, httpOnly sessions); conversations, embeddings, and memory are scoped to the account.
+
+![Welcome screen](docs/welcome.png)
+
+## Engineering highlights
+
+- **Server-side run cache** — tool outputs flow between pipeline stages at full fidelity server-side instead of being relayed (and truncated) through the LLM's tool-call arguments. Fixed systematic evaluation corruption and cut latency ~50%.
+- **Table-aware PDF ingestion** — extractors fuse table rows into strings like `Blinkit₹1,156-12%46%` that naive chunkers silently drop. A linearization pass reconstructs rows against their headers into atomic, searchable `TABLE:` chunks.
+- **Memory re-verification** — remembered answers are re-checked against fresh retrieval before reuse, and document/web conflicts are presented explicitly with both sources.
+
+## Quickstart
 
 ```bash
 npm install
-cp .env.example .env     # then fill in your keys
-npm run ingest           # load the demo corpus into PGVector (one-time)
+cp .env.example .env   # add your keys
+npm run ingest -- ./your-document.pdf
+npm run serve          # → http://localhost:3000
 ```
 
-Required keys in `.env`:
-- `GOOGLE_GENERATIVE_AI_API_KEY` — https://aistudio.google.com/app/apikey
-- `DATABASE_URL` — Postgres with the `pgvector` extension (`CREATE EXTENSION vector;`)
-- `TAVILY_API_KEY` — https://tavily.com (free tier)
+Requires: `AI_GATEWAY_API_KEY` (Vercel AI Gateway), `UPSTASH_VECTOR_REST_URL` + `UPSTASH_VECTOR_REST_TOKEN`, `TAVILY_API_KEY`.
 
-## Run
-
-### Chatbot UI (recommended)
-```bash
-npm run serve
-```
-Open **http://localhost:3000**. The chatbot streams every CRAG stage live so you
-can *evaluate* the pipeline: retrieved docs + similarity scores, the relevance
-verdict, the refined / web knowledge that was collected, and the final answer
-with its sources.
-
-### CLI (single query)
-```bash
-npm start
-QUERY="your question here" npm start
-```
-
-## Architecture
+## Project structure
 
 ```
 src/
-  lib/            # core CRAG functions (retriever, evaluator, refiner, rewriter, searcher)
-  lib/pipeline.js # orchestrator that streams every stage to the UI
-  mastra/         # Mastra workflow + agent + tool definitions
-  server.js       # Express + SSE API that hosts the frontend
-public/           # the chatbot frontend (vanilla JS, no build step)
+├── mastra/
+│   ├── agents/crag-agent.js    # the CRAG agent (pipeline rules, memory policy)
+│   ├── tools/index.js          # 5 tools: retrieve, evaluate, refine, rewrite, web-search
+│   ├── memory.js               # 4-layer Mastra memory configuration
+│   └── workflows/              # deterministic workflow variant
+├── lib/
+│   ├── retriever.js            # 5-stage retrieval engine
+│   ├── evaluator.js            # relevance scoring → confidence verdict
+│   ├── refiner.js              # strip-level knowledge refinement
+│   ├── ingest.js               # PDF ingestion + table linearization
+│   ├── auth.js                 # accounts, sessions, per-user scoping
+│   └── run-context.js          # server-side run cache between tools
+└── server.js                   # Express + SSE streaming + auth API
+public/                         # zero-dependency frontend (auth, chat, pipeline trace)
 ```
-
-The canonical pipeline is the **Mastra workflow** in
-`src/mastra/workflows/crag-workflow.js`. `src/lib/pipeline.js` runs the exact same
-four stages but emits a Server-Sent Event after each one, which is what powers the
-live UI trace.
-
-> **Swapping the LLM:** all model calls go through the `ai` SDK + `@ai-sdk/google`.
-> To switch providers, install the relevant `@ai-sdk/*` package and replace the
-> `google('gemini-1.5-pro')` calls in `src/lib/*.js` and `src/lib/pipeline.js`.
